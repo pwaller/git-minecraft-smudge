@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	
+	"github.com/cookieo9/resources-go/v2/resources"
 )
 
 type Location uint32
@@ -33,64 +35,29 @@ func (s *Locations) Len() int           { return len(s) }
 func (s *Locations) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s *Locations) Less(i, j int) bool { return s[i].Pos() < s[j].Pos() }
 
-func determine_compression_level(uncompr, compr []byte) int {
-	var compressed_buffer bytes.Buffer
-
-	fd, err := os.Create(fmt.Sprintf("orig.bin"))
-	if err != nil {
-		panic(err)
-	}
-	fd.Write(compr)
-	fd.Close()
-
-	fd, err = os.Create(fmt.Sprintf("java-deflated.bin"))
-	if err != nil {
-		panic(err)
-	}
-	fd.Write(java_deflate(uncompr))
-	fd.Close()
-
-	fd, err = os.Create(fmt.Sprintf("uncompressed.bin"))
-	if err != nil {
-		panic(err)
-	}
-	fd.Write(uncompr)
-	fd.Close()
-
-	for i := 0; i < 10; i++ {
-
-		compressed_buffer.Reset()
-
-		var err error
-		w, err := zlib.NewWriterLevel(&compressed_buffer, i)
-		if err != nil {
-			panic(err)
-		}
-		n, err := w.Write(uncompr)
-		if n != len(uncompr) || err != nil {
-			log.Panicf("Short write: %d, expected %d (buf = %v) err = %v", n, len(uncompr), compressed_buffer.Len(), err)
-		}
-		w.Close()
-
-		fd, err := os.Create(fmt.Sprintf("compr.%d.bin", i))
-		if err != nil {
-			panic(err)
-		}
-		fd.Write(compressed_buffer.Bytes())
-		fd.Close()
-
-		log.Printf("Tried level %d got - %d - %d / %d", i, len(uncompr), compressed_buffer.Len(), len(compr))
-
-		if bytes.Equal(compr, compressed_buffer.Bytes()) {
-			return i
-		}
-	}
-	return -1
-}
-
 func java_deflate(data []byte) []byte {
-	c := exec.Command("java", "-jar", "java-deflate.jar")
-	go c.Run()
+	
+
+	jar, err := resources.Open("java-deflate.jar")
+	if err != nil { panic(err) }
+	defer jar.Close()
+	
+	file_on_disk, err := ioutil.TempFile(".", "git-minecraft-smudge-jar")
+	if err != nil { panic(err) }
+	_, err = io.Copy(file_on_disk, jar)
+	if err != nil { panic(err) }
+	file_on_disk.Close()
+	
+	defer func() {
+		os.Remove(file_on_disk.Name())
+	}()
+	
+	jarname := file_on_disk.Name()
+	//log.Printf("Jarname = %s", jarname)
+
+	c := exec.Command("java", "-jar", jarname)
+	//c.Stderr = os.Stderr
+	
 	stdin, err := c.StdinPipe()
 	if err != nil {
 		panic(err)
@@ -99,15 +66,37 @@ func java_deflate(data []byte) []byte {
 	if err != nil {
 		panic(err)
 	}
+	
+	err = c.Start()
+	if err != nil { panic(err) }
+	
+	//time.Sleep(1*time.Second)
+	
+	result := []byte{}
+	read_all := make(chan bool)
+	
+	go func() {
+		result, err = ioutil.ReadAll(stdout)
+		if err != nil {
+			panic(err)
+		}
+		//log.Printf("Result size: %d", len(result))
+		read_all <- true
+	}()
+	
+	//log.Printf("Writing.. %d", len(data))
+	
 	n, err := stdin.Write(data)
 	if n != len(data) || err != nil {
 		panic(err)
 	}
+	//log.Print("closing")
 	stdin.Close()
-	result, err := ioutil.ReadAll(stdout)
-	if err != nil {
-		panic(err)
-	}
+	<-read_all
+	
+	err = c.Wait()
+	//return []byte{} // result
+	//log.Print("Done..")
 	return result
 }
 
@@ -125,19 +114,17 @@ func read_chunk(input io.Reader, sectorsize uint16) (chunksize uint32, compressi
 	if chunksize > uint32(sectorsize) {
 		log.Printf("Chunk size > sector size: %x > %x", chunksize, sectorsize)
 		chunksize = 5
+		panic("Read junk, stopping.")
 		return
 	}
 	if compression_type != 2 {
 		chunksize = 5
+		log.Panicf("Unknown compression type %d", compression_type)
 		return
 	}
 	chunksize -= 1
 
-	if compression_type == 72 {
-		// read the true size
-	}
-
-	log.Printf("Reading header type %d size %d", compression_type, chunksize)
+	//log.Printf("Reading header type %d size %d", compression_type, chunksize)
 
 	limited_in := io.LimitReader(input, int64(chunksize))
 	compressed_data := &bytes.Buffer{}
@@ -180,12 +167,136 @@ func process_file(direction string, filename string) {
 		if err != nil {
 			log.Panic(err)
 		}
-		out, err = os.Create(filename + ".git.smudged")
+		switch direction {
+		case "smudge":
+			out, err = os.Create(filename + ".git.smudged")
+		case "clean":
+			out, err = os.Create(filename + ".git.cleaned")
+		}			
 		if err != nil {
 			log.Panic(err)
 		}
 	}
+	
+	process_stream(direction, input, out)
+}
 
+func smudge(locations Locations, input io.Reader, out io.Writer) {
+	next := uint32(0x2000)
+	
+	for i, loc := range locations {
+	
+		// TODO: Write test case for circumstances that 0x2000 isn't in the
+		//		 locations table. (e.g, manually fudge a file)
+		
+		p, size := loc.Decode()
+		if size == 0 {
+			panic("Empty sector?!")
+			continue
+		}
+
+		datasize, format, data, err := read_chunk(input, size)
+		
+		if err != nil {
+			log.Print("Failed to read chunk %d", i)
+		}
+
+		junksize := uint32(size) - datasize
+		
+		if i < len(locations)-1 {
+			next, _ = locations[i+1].Decode()
+			this_size := next - p
+			// Take into account holes in the file
+			junksize += this_size - uint32(size)
+		}
+		/*
+		if uint16((next - p)/4096) != sectorsize/4096 {
+			log.Printf("p, sectorsize, datasize = %x, %x, %x", p, sectorsize, datasize)
+			log.Printf("  delta = %d, %d", (next - p)/4096, sectorsize/4096)
+		}
+		*/
+		_, _ = format, data
+
+		junk := make([]byte, junksize)
+		n, err := input.Read(junk)
+		if n != int(junksize) || err != nil {
+			panic(err)
+		}
+		
+		log.Printf("len(data) = %x", len(data))
+		
+		err = binary.Write(out, binary.BigEndian, uint32(len(data)))
+		if err != nil { panic(err) }
+		_, err = out.Write(data)
+		if err != nil { panic(err) }
+		log.Printf("junksize = %x  / len(junk) = %x", junksize, len(junk))
+		err = binary.Write(out, binary.BigEndian, junksize)
+		if err != nil { panic(err) }
+		_, err = out.Write(junk)
+		if err != nil { panic(err) }
+		
+		o, _ := out.(io.WriteSeeker)
+		opos, _ := o.Seek(0, 1)
+		log.Printf(" -- Position : %x", opos)
+	}
+}
+
+func clean(locations Locations, input io.Reader, out io.Writer) {
+	defer func() {
+		if err := recover(); err != nil {
+			i, _ := input.(io.ReadSeeker)
+			o, _ := out.(io.WriteSeeker)
+			ipos, _ := i.Seek(0, 1)
+			opos, _ := o.Seek(0, 1)
+			log.Printf("Position at panic: %x / %x", ipos, opos)
+			panic(err)
+		}
+	}()
+
+	var datalen uint32
+	for {
+		//i, _ := input.(io.ReadSeeker)
+		//ipos, _ := i.Seek(0, 1)
+		//log.Printf(" -- input position: %x", ipos)
+			
+		err := binary.Read(input, binary.BigEndian, &datalen)
+		//log.Printf("Reading %x bytes", datalen)
+		
+		if err == io.EOF { break }
+		if err != nil { panic(err) }
+		
+		if datalen > 1024*1024 { panic("Too big.") }
+		
+		data := make([]byte, datalen)
+		_, err = input.Read(data)
+		if err != nil { panic(err) }
+		
+		deflated := java_deflate(data)
+		
+		err = binary.Write(out, binary.BigEndian, uint32(len(deflated)+1))
+		if err != nil { panic(err) }
+		
+		err = binary.Write(out, binary.BigEndian, uint8(2))
+		if err != nil { panic(err) }
+		
+		_, err = out.Write(deflated)
+		if err != nil { panic(err) }
+		
+		err = binary.Read(input, binary.BigEndian, &datalen)
+		
+		if err != nil { panic(err) }
+		log.Printf("Datalen = %x", datalen)
+		data = make([]byte, datalen)
+		_, err = input.Read(data)
+		if err != nil { panic(err) }
+		
+		_, err = out.Write(data)
+		if err != nil { panic(err) }
+	}
+}
+
+func process_stream(direction string, input io.Reader, out io.Writer) {
+	var err error
 	var locations Locations
 	var timestamps [1024]uint32
 
@@ -208,49 +319,15 @@ func process_file(direction string, filename string) {
 	}
 
 	sort.Sort(&locations)
-
-	log.Print(locations[:10])
-
-	//nextpos = locations[0]
-
-	//curpos := 0x2000
-	for i, loc := range locations {
-		log.Printf("Got %d locs left timestamp = %x", len(locations)-i, timestamps[i])
-		p, sectorsize := loc.Decode()
-		if sectorsize == 0 {
-			continue
-		}
-
-		datasize, format, data, err := read_chunk(input, sectorsize)
-
-		log.Printf("p, sectorsize, datasize = %x, %x, %x", p, sectorsize, datasize)
-
-		if err != nil {
-			log.Print("Failed to read chunk %d", i)
-		}
-
-		junk := uint32(sectorsize) - datasize
-		//junk := int(nextloc) - ()
-		_, _ = format, data
-
-		//log.Printf("There are 0x%x junk bytes", junk)
-
-		j := make([]byte, junk)
-		n, err := input.Read(j)
-		if n != int(junk) || err != nil {
-			panic(err)
-		}
-
-		out.Write(data)
-		//out.Write(j)
-
-		//sk, _ := input.(io.Seeker)
-		//pos, _ := sk.Seek(0, 1)
-		//log.Printf("Current input position: %d (%x)", pos, pos)
-
+	
+	switch direction {
+	case "smudge":
+		smudge(locations, input, out)
+	case "clean":
+		clean(locations, input, out)
+	default:
+		log.Panicf("Unknown direction: %s", direction)
 	}
-
-	_ = out
 }
 
 func main() {
@@ -266,4 +343,5 @@ func main() {
 	for _, filename := range flag.Args()[1:] {
 		process_file(direction, filename)
 	}
+	log.Print("Done")
 }
