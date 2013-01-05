@@ -188,7 +188,7 @@ func process_file(direction string, filename string) {
 	process_stream(direction, input, out)
 }
 
-func smudge(locations Locations, input io.Reader, out io.Writer) {
+func clean(locations Locations, input io.Reader, out io.Writer) {
 	next := uint32(0x2000)
 
 	for i, loc := range locations {
@@ -256,7 +256,7 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 	}
 }
 
-func clean(locations Locations, input io.Reader, out io.Writer) {
+func smudge(locations Locations, input io.Reader, out io.Writer) {
 	defer func() {
 		if err := recover(); err != nil {
 			i, _ := input.(io.ReadSeeker)
