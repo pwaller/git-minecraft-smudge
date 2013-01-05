@@ -1,4 +1,5 @@
 /git-minecraft-smudge
+/git-minecraft-smudge-with-java
 
 *.class
 *.jar
