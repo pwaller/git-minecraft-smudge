@@ -1,1 +1,5 @@
 /git-minecraft-smudge
+
+*.class
+*.jar
+*.mca*

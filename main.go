@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"hash/adler32"
 	"io"
 	"io/ioutil"
 	"log"
@@ -35,6 +36,7 @@ func (s *Locations) Len() int           { return len(s) }
 func (s *Locations) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s *Locations) Less(i, j int) bool { return s[i].Pos() < s[j].Pos() }
 
+// TODO: JVM startup time is expensive. Do something smarter and maybe parallelize
 func java_deflate(data []byte) []byte {
 
 	jar, err := resources.Open("java-deflate.jar")
@@ -250,9 +252,19 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 			panic(err)
 		}
 
-		o, _ := out.(io.WriteSeeker)
-		opos, _ := o.Seek(0, 1)
-		log.Printf(" -- Position : %x", opos)
+		/*
+			var opos int64
+
+			switch o := out.(type) {
+			case io.WriteSeeker:
+				opos, _ = o.Seek(0, 1)
+			case *bytes.Buffer:
+				opos = int64(o.Len())
+			default:
+				log.Panicf("unknown type %q", o)
+			}
+			log.Printf(" -- Position : %x", opos)
+		*/
 	}
 }
 
@@ -296,11 +308,13 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 
 		deflated := java_deflate(data)
 
+		// Chunk size
 		err = binary.Write(out, binary.BigEndian, uint32(len(deflated)+1))
 		if err != nil {
 			panic(err)
 		}
 
+		// Compression type
 		err = binary.Write(out, binary.BigEndian, uint8(2))
 		if err != nil {
 			panic(err)
@@ -328,6 +342,14 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 			panic(err)
 		}
 	}
+}
+
+// Obtain a hash of buffer without modifying its contents
+func GetHash(buf *bytes.Buffer) uint32 {
+	h := adler32.New()
+	// Use a new buffer so we don't modify the old one by reading it
+	bytes.NewBuffer(buf.Bytes()).WriteTo(h)
+	return h.Sum32()
 }
 
 func process_stream(direction string, input io.Reader, out io.Writer) {
@@ -359,7 +381,30 @@ func process_stream(direction string, input io.Reader, out io.Writer) {
 	case "smudge":
 		smudge(locations, input, out)
 	case "clean":
-		clean(locations, input, out)
+		inputbuf := &bytes.Buffer{}
+
+		_, err := io.Copy(inputbuf, input)
+		if err != nil {
+			panic(err)
+		}
+		h_before := GetHash(inputbuf)
+
+		outbuf := &bytes.Buffer{}
+		tmpout := &bytes.Buffer{}
+
+		outbufs := io.MultiWriter(outbuf, tmpout)
+		clean(locations, inputbuf, outbufs)
+
+		resmudgedbuf := &bytes.Buffer{}
+		smudge(locations, tmpout, resmudgedbuf)
+		h_after := GetHash(resmudgedbuf)
+		if h_before != h_after {
+			log.Panicf("Smudged output doesn't equal input! %x != %x",
+				h_before, h_after)
+		}
+
+		outbuf.WriteTo(out)
+
 	default:
 		log.Panicf("Unknown direction: %s", direction)
 	}
