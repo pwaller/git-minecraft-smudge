@@ -1,0 +1,39 @@
+git-minecraft-smudge
+--------------------
+
+Abusing git's filter mechanism for fun and profit.
+
+Purpose
+-------
+
+This results in a drastic space saving when using git to track minecraft anvil
+files. It works by decompressing minecraft's chunk data so that git's delta
+compression can work more effectively on it.
+
+Why?
+----
+
+I want to have backups for two purposes, one to see how it evolves over a long
+period of time, and another in case we have a severe problem (nuke going off)
+which we need to fix.
+
+Result
+------
+For 10 saves with a significant amount of stuff done to them, the resulting git
+repository was only 7% larger than the final save itself. A regular `git gc` is
+needed.
+
+Usage
+-----
+
+In your `.gitconfig` (doesn't cause anything by itself):
+
+	[filter "minecraft-anvil"]
+		clean = git-minecraft-smudge clean -
+		smudge = git-minecraft-smudge smudge -
+
+and in your `.gitattributes` in your world folder or higher:
+
+	*.mca minecraft-anvil
+
+note: this renders the repository unusable without `git-minecraft-smudge`.
