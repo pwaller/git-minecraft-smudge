@@ -2,7 +2,7 @@
 
 all: git-minecraft-smudge git-minecraft-smudge-with-java
 
-git-minecraft-smudge: main.go
+git-minecraft-smudge: *.go
 	go get -v 
 	go build
 
