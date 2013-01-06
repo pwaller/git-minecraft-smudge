@@ -84,35 +84,6 @@ func read_chunk(input io.Reader, sectorsize uint16) (chunksize uint32, compressi
 	return
 }
 
-func process_file(direction string, filename string) {
-	var input io.Reader
-	var out io.Writer
-	var err error
-
-	//log.Print("Processing ", filename)
-
-	if filename == "-" {
-		input = os.Stdin
-		out = os.Stdout
-	} else {
-		input, err = os.Open(filename)
-		if err != nil {
-			log.Panic(err)
-		}
-		switch direction {
-		case "smudge":
-			out, err = os.Create(filename + ".git.smudged")
-		case "clean":
-			out, err = os.Create(filename + ".git.cleaned")
-		}
-		if err != nil {
-			log.Panic(err)
-		}
-	}
-
-	process_stream(direction, input, out)
-}
-
 func clean(locations Locations, input io.Reader, out io.Writer) {
 	next := uint32(0x2000)
 
@@ -350,6 +321,35 @@ func process_stream(direction string, input io.Reader, out io.Writer) {
 	default:
 		log.Panicf("Unknown direction: %s", direction)
 	}
+}
+
+func process_file(direction string, filename string) {
+	var input io.Reader
+	var out io.Writer
+	var err error
+
+	//log.Print("Processing ", filename)
+
+	if filename == "-" {
+		input = os.Stdin
+		out = os.Stdout
+	} else {
+		input, err = os.Open(filename)
+		if err != nil {
+			log.Panic(err)
+		}
+		switch direction {
+		case "smudge":
+			out, err = os.Create(filename + ".git.smudged")
+		case "clean":
+			out, err = os.Create(filename + ".git.cleaned")
+		}
+		if err != nil {
+			log.Panic(err)
+		}
+	}
+
+	process_stream(direction, input, out)
 }
 
 func main() {
