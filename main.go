@@ -15,6 +15,8 @@ import (
 
 type Location uint32
 
+const JUNK_MAGIC = 0xBEEFDEAD
+
 func (l Location) Pos() uint32 { pos, _ := l.Decode(); return pos }
 func (l Location) Decode() (pos uint32, size uint16) {
 	pos = uint32((l & 0xFFFF00) * 0x10)
@@ -85,7 +87,7 @@ func read_chunk(input io.Reader, sectorsize uint16) (chunksize uint32, compressi
 }
 
 func clean(locations Locations, input io.Reader, out io.Writer) {
-	next := uint32(0x2000)
+	var pos uint32 = 0x2000
 
 	for i, loc := range locations {
 
@@ -93,6 +95,27 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 		//		 locations table. (e.g, manually fudge a file)
 
 		p, size := loc.Decode()
+
+		if pos < p {
+			err := binary.Write(out, binary.BigEndian, uint32(JUNK_MAGIC))
+			if err != nil {
+				panic(err)
+			}
+
+			junklen := p - pos
+			data := checked_byteslice_read(input, uint64(junklen))
+			pos += junklen
+
+			err = binary.Write(out, binary.BigEndian, junklen)
+			if err != nil {
+				panic(err)
+			}
+			_, err = out.Write(data)
+			if err != nil {
+				panic(err)
+			}
+		}
+
 		if size == 0 {
 			// We don't care about empty sectors, they just haven't been loaded
 			// yet...
@@ -100,6 +123,7 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 		}
 
 		datasize, _, data, err := read_chunk(input, size)
+		pos += uint32(size)
 
 		if err != nil {
 			log.Print("Failed to read chunk %d", i)
@@ -108,15 +132,16 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 		junksize := uint32(size) - datasize
 
 		if i < len(locations)-1 {
-			next, _ = locations[i+1].Decode()
+			next, _ := locations[i+1].Decode()
 			this_size := next - p
 			// Take into account holes in the file
 			junksize += this_size - uint32(size)
 		}
 
 		junk := make([]byte, junksize)
-		n, err := input.Read(junk)
-		if n != int(junksize) || err != nil {
+		_, err = io.ReadFull(input, junk)
+		pos += junksize
+		if err != nil {
 			panic(err)
 		}
 
@@ -214,6 +239,7 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 
 	var datalen uint32
 	for {
+		// Read uncompressed sector length
 		err := binary.Read(input, binary.BigEndian, &datalen)
 
 		if err == io.EOF {
@@ -224,10 +250,35 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 			panic(err)
 		}
 
-		if datalen > 1024*1024 {
+		if datalen == JUNK_MAGIC {
+			// If it's the junk magic then we have some junk that needs reading
+			// first.
+
+			// Read Junk Size
+			err := binary.Read(input, binary.BigEndian, &datalen)
+			if err != nil {
+				panic(err)
+			}
+
+			// Read Junk
+			//junk := checked_byteslice_read(input, uint64(datalen))
+			n, err := io.CopyN(out, input, int64(datalen))
+			if n != int64(datalen) {
+				log.Panicf("Bad CopyN expected %d got %d err = %v", datalen, n, err)
+			}
+			if err != nil {
+				panic(err)
+			}
+
+			// Read new following datalen
+			err = binary.Read(input, binary.BigEndian, &datalen)
+			if err != nil {
+				panic(err)
+			}
+
+		} else if datalen > 1024*1024 {
 			panic("Too big.")
-		}
-		if datalen == 0 {
+		} else if datalen == 0 {
 			//panic("datalen == 0")
 			// Copy the rest of what remains
 			_, err := io.Copy(out, input)
@@ -237,44 +288,54 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 			break
 		}
 
+		// Read uncompressed sector
 		data := make([]byte, datalen)
-		_, err = input.Read(data)
+		_, err = io.ReadFull(input, data)
 		if err != nil {
 			panic(err)
 		}
 
+		// Get java to recompress it
 		to_compress <- data
 		deflated := <-compressed
 
-		// Chunk size
+		// Write compressed chunk size
 		err = binary.Write(out, binary.BigEndian, uint32(len(deflated)+1))
 		if err != nil {
 			panic(err)
 		}
 
-		// Compression type
+		// Write compression type
 		err = binary.Write(out, binary.BigEndian, uint8(2))
 		if err != nil {
 			panic(err)
 		}
 
+		// Write comprsesed data
 		_, err = out.Write(deflated)
 		if err != nil {
 			panic(err)
 		}
 
+		// ------------------------
+		// JUNK reading/writing
+		// ------------------------
+
+		// Read junk length
 		err = binary.Read(input, binary.BigEndian, &datalen)
 
 		if err != nil {
 			panic(err)
 		}
-		//log.Printf("Datalen = %x", datalen)
+
+		// Read junk
 		data = make([]byte, datalen)
-		_, err = input.Read(data)
+		_, err = io.ReadFull(input, data)
 		if err != nil {
 			panic(err)
 		}
 
+		// Emit junk
 		_, err = out.Write(data)
 		if err != nil {
 			panic(err)
