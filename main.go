@@ -87,7 +87,7 @@ func java_deflater() (chan []byte, chan []byte) { //(data []byte) []byte {
 			log.Print("Defer is executing..")
 			os.Remove(file_on_disk.Name())
 			log.Print("Waiting..")
-			err = c.Wait()
+			//err = c.Wait()
 			log.Print("Waited..")
 			if err != nil {
 				panic(err)
@@ -97,6 +97,11 @@ func java_deflater() (chan []byte, chan []byte) { //(data []byte) []byte {
 		for {
 			input := <-in
 			if len(input) == 0 {
+				log.Print("Inputlen = 0")
+				err := binary.Write(stdin, binary.BigEndian, int32(0))
+				if err != nil {
+					panic(err)
+				}
 				// We're done
 				break
 			}
@@ -215,6 +220,8 @@ func process_file(direction string, filename string) {
 	var out io.Writer
 	var err error
 
+	log.Print("Processing ", filename)
+
 	if filename == "-" {
 		input = os.Stdin
 		out = os.Stdout
@@ -247,7 +254,8 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 
 		p, size := loc.Decode()
 		if size == 0 {
-			panic("Empty sector?!")
+			// TODO: something here..
+			//log.Panicf("Empty sector?! p = %d", p)
 			continue
 		}
 
@@ -314,6 +322,20 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 		*/
 	}
 
+	// Sentinel
+	err := binary.Write(out, binary.BigEndian, uint32(0))
+	if err != nil {
+		panic(err)
+	}
+
+	// TODO: Copy whatever remains of the file
+	// Note: READER must also do something sane with these bytes
+	n, err := io.Copy(out, input)
+	if err != nil {
+		log.Panic(err)
+	}
+	log.Printf("Copied %d bytes at EOF", n)
+
 }
 
 func smudge(locations Locations, input io.Reader, out io.Writer) {
@@ -330,9 +352,18 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 		}()
 	*/
 
+	buf := &bytes.Buffer{}
+	n, err := io.Copy(buf, input)
+	log.Printf("Copying %d bytes (Err = %v)", n, err)
+	if err != nil {
+		panic(err)
+	}
+	input = buf
+
 	to_compress, compressed := java_deflater()
 
 	defer func() {
+		log.Print("smudge completed..")
 		// Signal the deflater that we're done
 		to_compress <- []byte{}
 	}()
@@ -344,9 +375,10 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 		//log.Printf(" -- input position: %x", ipos)
 
 		err := binary.Read(input, binary.BigEndian, &datalen)
-		//log.Printf("Reading %x bytes", datalen)
+		//log.Printf("Reading %x bytes (buf = %d) %v", datalen, buf.Len(), err)
 
 		if err == io.EOF {
+			log.Print("Hit EOF")
 			break
 		}
 		if err != nil {
@@ -355,6 +387,15 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 
 		if datalen > 1024*1024 {
 			panic("Too big.")
+		}
+		if datalen == 0 {
+			//panic("datalen == 0")
+			// Copy the rest of what remains
+			_, err := io.Copy(out, input)
+			if err != nil {
+				panic(err)
+			}
+			break
 		}
 
 		data := make([]byte, datalen)
@@ -400,6 +441,7 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 			panic(err)
 		}
 	}
+	log.Printf("I am here...")
 }
 
 // Obtain a hash of buffer without modifying its contents
