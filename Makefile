@@ -9,6 +9,7 @@ git-minecraft-smudge: main.go
 git-minecraft-smudge-with-java: git-minecraft-smudge java-deflate.jar
 	zip data.zip java-deflate.jar
 	cat git-minecraft-smudge data.zip > git-minecraft-smudge-with-java
+	rm data.zip
 	chmod u+x git-minecraft-smudge-with-java
 	zip -A git-minecraft-smudge-with-java 
 
