@@ -13,44 +13,41 @@ public class Cmd
 {
     public static void main(String args[])
     {
-        InputStream inputstream = null;
-        PrintStream printstream = null;
-        DataInputStream datainputstream = null;
-        
-        System.err.println("Deflate start.");
-        
-        inputstream = System.in;
-        datainputstream = new DataInputStream(inputstream);
-        
-        Deflater deflater = null;
-        DeflaterOutputStream deflateroutputstream = null;
-        
-        deflater = new Deflater();
-        deflateroutputstream = new DeflaterOutputStream(System.out, deflater);
+        DataInputStream in = new DataInputStream(System.in);
+        DataOutputStream out = new DataOutputStream(System.out);
 
-		int nRead;
-		byte[] data = new byte[10*1024*1024];
 
 		try {
-			System.err.println("Reading in and writing out..");
-			while ((nRead = datainputstream.read(data, 0, data.length)) != -1) {
-			  //buffer.write(data, 0, nRead);
-			  System.err.printf("Writing .. %d\n", nRead);
-			  deflateroutputstream.write(data, 0, nRead);
-			}
-			deflateroutputstream.flush();
-        	deflateroutputstream.finish();
+			// Read (len, bytes...) then write (len, compressedbytes...)
+			while (true) {
+				int amount = in.readInt();
+				if (amount == 0) {
+					break;
+				}
+
+				byte[] data = new byte[amount];
+				int result = in.read(data, 0, data.length);
+
+				byte[] compressed = new byte[amount];
+
+        		Deflater deflater = new Deflater();
+				deflater.setInput(data);
+				deflater.finish();
+
+				int len = deflater.deflate(compressed);
+
+				out.writeInt(len);
+				out.write(compressed, 0, len);
+	        }
+	    } catch (EOFException e) {
+	    	
 		} catch (IOException e) {
 			System.err.println("Failure to write..");
 			return;
-		}
-        
+		}        
         
         try {
-		    if(deflateroutputstream != null) deflateroutputstream.close();            
-		    if(datainputstream != null) datainputstream.close();
-		    if(printstream != null) printstream.close();
-		    if(inputstream != null) inputstream.close();
+		    if(in != null) in.close();
 	    } catch (IOException e) {}
 	    System.err.println("Success.");
     }
