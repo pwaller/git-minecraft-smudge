@@ -97,27 +97,22 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 		p, size := loc.Decode()
 
 		if pos < p {
-			err := binary.Write(out, binary.BigEndian, uint32(JUNK_MAGIC))
-			if err != nil {
-				panic(err)
-			}
+			checked_bin_write(out, uint32(JUNK_MAGIC))
 
 			junklen := p - pos
 			data := checked_byteslice_read(input, uint64(junklen))
 			pos += junklen
 
-			err = binary.Write(out, binary.BigEndian, junklen)
-			if err != nil {
-				panic(err)
-			}
-			_, err = out.Write(data)
+			checked_bin_write(out, junklen)
+
+			_, err := out.Write(data)
 			if err != nil {
 				panic(err)
 			}
 		}
 
 		if size == 0 {
-			// We don't care about empty sectors, they just haven't been loaded
+			// We don't care about empty locations, they just haven't been loaded
 			// yet...
 			continue
 		}
@@ -145,19 +140,15 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 			panic(err)
 		}
 
-		err = binary.Write(out, binary.BigEndian, uint32(len(data)))
-		if err != nil {
-			panic(err)
-		}
+		checked_bin_write(out, uint32(len(data)))
+
 		_, err = out.Write(data)
 		if err != nil {
 			panic(err)
 		}
 
-		err = binary.Write(out, binary.BigEndian, junksize)
-		if err != nil {
-			panic(err)
-		}
+		checked_bin_write(out, junksize)
+
 		_, err = out.Write(junk)
 		if err != nil {
 			panic(err)
@@ -165,18 +156,15 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 	}
 
 	// Sentinel
-	err := binary.Write(out, binary.BigEndian, uint32(0))
-	if err != nil {
-		panic(err)
-	}
+	checked_bin_write(out, uint32(0))
 
 	// TODO: Copy whatever remains of the file
 	// Note: READER must also do something sane with these bytes
-	n, err := io.Copy(out, input)
+	_, err := io.Copy(out, input)
 	if err != nil {
 		log.Panic(err)
 	}
-	log.Printf("Copied %d bytes at EOF", n)
+	//log.Printf("Copied %d bytes at EOF", n)
 
 }
 
@@ -208,22 +196,8 @@ func checked_byteslice_read(in io.Reader, len uint64) []byte {
 }
 
 func smudge(locations Locations, input io.Reader, out io.Writer) {
-	/*
-		defer func() {
-			if err := recover(); err != nil {
-				i, _ := input.(io.ReadSeeker)
-				o, _ := out.(io.WriteSeeker)
-				ipos, _ := i.Seek(0, 1)
-				opos, _ := o.Seek(0, 1)
-				log.Printf("Position at panic: %x / %x", ipos, opos)
-				panic(err)
-			}
-		}()
-	*/
-
 	buf := &bytes.Buffer{}
 	_, err := io.Copy(buf, input)
-	//log.Printf("Copying %d bytes (Err = %v)", n, err)
 	if err != nil {
 		panic(err)
 	}
@@ -254,11 +228,7 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 			// If it's the junk magic then we have some junk that needs reading
 			// first.
 
-			// Read Junk Size
-			err := binary.Read(input, binary.BigEndian, &datalen)
-			if err != nil {
-				panic(err)
-			}
+			checked_bin_read(input, &datalen) // Read Junk Size
 
 			// Read Junk
 			//junk := checked_byteslice_read(input, uint64(datalen))
@@ -270,11 +240,7 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 				panic(err)
 			}
 
-			// Read new following datalen
-			err = binary.Read(input, binary.BigEndian, &datalen)
-			if err != nil {
-				panic(err)
-			}
+			checked_bin_read(input, &datalen) // Read new subsequent datalen
 
 		} else if datalen > 1024*1024 {
 			panic("Too big.")
@@ -289,48 +255,23 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 		}
 
 		// Read uncompressed sector
-		data := make([]byte, datalen)
-		_, err = io.ReadFull(input, data)
-		if err != nil {
-			panic(err)
-		}
+		data := checked_byteslice_read(input, uint64(datalen))
 
 		// Get java to recompress it
 		to_compress <- data
 		deflated := <-compressed
 
 		// Write compressed chunk size
-		err = binary.Write(out, binary.BigEndian, uint32(len(deflated)+1))
-		if err != nil {
-			panic(err)
-		}
-
+		checked_bin_write(out, uint32(len(deflated)+1))
 		// Write compression type
-		err = binary.Write(out, binary.BigEndian, uint8(2))
-		if err != nil {
-			panic(err)
-		}
-
-		// Write comprsesed data
-		_, err = out.Write(deflated)
-		if err != nil {
-			panic(err)
-		}
-
-		// ------------------------
-		// JUNK reading/writing
-		// ------------------------
-
+		checked_bin_write(out, uint8(2))
 		// Read junk length
-		err = binary.Read(input, binary.BigEndian, &datalen)
-
-		if err != nil {
-			panic(err)
-		}
-
+		checked_bin_read(input, &datalen)
 		// Read junk
-		data = make([]byte, datalen)
-		_, err = io.ReadFull(input, data)
+		data = checked_byteslice_read(input, uint64(datalen))
+
+		// Write compressed data
+		_, err = out.Write(deflated)
 		if err != nil {
 			panic(err)
 		}
@@ -352,27 +293,14 @@ func GetHash(buf *bytes.Buffer) uint32 {
 }
 
 func process_stream(direction string, input io.Reader, out io.Writer) {
-	var err error
 	var locations Locations
 	var timestamps [1024]uint32
 
-	err = binary.Read(input, binary.BigEndian, &locations)
-	if err != nil {
-		panic(err)
-	}
-	binary.Write(out, binary.BigEndian, locations)
-	if err != nil {
-		panic(err)
-	}
+	checked_bin_read(input, &locations)
+	checked_bin_read(input, &timestamps)
 
-	err = binary.Read(input, binary.BigEndian, &timestamps)
-	if err != nil {
-		panic(err)
-	}
-	binary.Write(out, binary.BigEndian, timestamps)
-	if err != nil {
-		panic(err)
-	}
+	checked_bin_write(out, locations)
+	checked_bin_write(out, timestamps)
 
 	sort.Sort(&locations)
 
