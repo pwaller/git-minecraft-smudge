@@ -49,6 +49,7 @@ public class Cmd
         try {
 		    if(in != null) in.close();
 	    } catch (IOException e) {}
-	    System.err.println("Success.");
+	    
+	    //System.err.println("Success.");
     }
 }

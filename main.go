@@ -37,8 +37,7 @@ func (s *Locations) Len() int           { return len(s) }
 func (s *Locations) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s *Locations) Less(i, j int) bool { return s[i].Pos() < s[j].Pos() }
 
-// TODO: JVM startup time is expensive. Do something smarter and maybe parallelize
-func java_deflater() (chan []byte, chan []byte) { //(data []byte) []byte {
+func run_jar() (io.Writer, io.Reader, func()) {
 
 	jar, err := resources.Open("java-deflate.jar")
 	if err != nil {
@@ -57,7 +56,6 @@ func java_deflater() (chan []byte, chan []byte) { //(data []byte) []byte {
 	file_on_disk.Close()
 
 	jarname := file_on_disk.Name()
-	//log.Printf("Jarname = %s", jarname)
 
 	c := exec.Command("java", "-jar", jarname)
 	c.Stderr = os.Stderr
@@ -76,33 +74,22 @@ func java_deflater() (chan []byte, chan []byte) { //(data []byte) []byte {
 		panic(err)
 	}
 
+	return stdin, stdout, func() {
+		os.Remove(file_on_disk.Name())
+	}
+}
+
+func java_deflater() (chan []byte, chan []byte, func()) {
+
+	stdin, stdout, cleanup := run_jar()
+
 	in, out := make(chan []byte), make(chan []byte)
 
-	//f, _ := stdout.(*os.File)
-
-	//syscall.SetNonblock(int(f.Fd()), true)
-
 	go func() {
-		defer func() {
-			log.Print("Defer is executing..")
-			os.Remove(file_on_disk.Name())
-			log.Print("Waiting..")
-			//err = c.Wait()
-			log.Print("Waited..")
-			if err != nil {
-				panic(err)
-			}
-		}()
-
 		for {
 			input := <-in
 			if len(input) == 0 {
-				log.Print("Inputlen = 0")
-				err := binary.Write(stdin, binary.BigEndian, int32(0))
-				if err != nil {
-					panic(err)
-				}
-				// We're done
+				binary.Write(stdin, binary.BigEndian, int32(0))
 				break
 			}
 
@@ -125,14 +112,8 @@ func java_deflater() (chan []byte, chan []byte) { //(data []byte) []byte {
 			}()
 
 			var comprlen int32
-			/*
-				if done_one {
-					x := make([]byte, 8)
 
-					log.Panicf("x = %v", x)
-				} else {
-				}*/
-			err = binary.Read(stdout, binary.BigEndian, &comprlen)
+			err := binary.Read(stdout, binary.BigEndian, &comprlen)
 			if err != nil {
 				log.Print("Err = ", err)
 				panic(err)
@@ -155,10 +136,10 @@ func java_deflater() (chan []byte, chan []byte) { //(data []byte) []byte {
 			}
 			out <- output
 		}
-		log.Print("Finishing compression..")
+		//log.Print("Finishing compression..")
 	}()
 
-	return in, out
+	return in, out, cleanup
 }
 
 func read_chunk(input io.Reader, sectorsize uint16) (chunksize uint32, compression_type uint8, data []byte, err error) {
@@ -184,8 +165,6 @@ func read_chunk(input io.Reader, sectorsize uint16) (chunksize uint32, compressi
 		return
 	}
 	chunksize -= 1
-
-	//log.Printf("Reading header type %d size %d", compression_type, chunksize)
 
 	limited_in := io.LimitReader(input, int64(chunksize))
 	compressed_data := &bytes.Buffer{}
@@ -220,7 +199,7 @@ func process_file(direction string, filename string) {
 	var out io.Writer
 	var err error
 
-	log.Print("Processing ", filename)
+	//log.Print("Processing ", filename)
 
 	if filename == "-" {
 		input = os.Stdin
@@ -254,12 +233,12 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 
 		p, size := loc.Decode()
 		if size == 0 {
-			// TODO: something here..
-			//log.Panicf("Empty sector?! p = %d", p)
+			// We don't care about empty sectors, they just haven't been loaded
+			// yet...
 			continue
 		}
 
-		datasize, format, data, err := read_chunk(input, size)
+		datasize, _, data, err := read_chunk(input, size)
 
 		if err != nil {
 			log.Print("Failed to read chunk %d", i)
@@ -273,21 +252,12 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 			// Take into account holes in the file
 			junksize += this_size - uint32(size)
 		}
-		/*
-			if uint16((next - p)/4096) != sectorsize/4096 {
-				log.Printf("p, sectorsize, datasize = %x, %x, %x", p, sectorsize, datasize)
-				log.Printf("  delta = %d, %d", (next - p)/4096, sectorsize/4096)
-			}
-		*/
-		_, _ = format, data
 
 		junk := make([]byte, junksize)
 		n, err := input.Read(junk)
 		if n != int(junksize) || err != nil {
 			panic(err)
 		}
-
-		//log.Printf("len(data) = %x", len(data))
 
 		err = binary.Write(out, binary.BigEndian, uint32(len(data)))
 		if err != nil {
@@ -297,7 +267,7 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 		if err != nil {
 			panic(err)
 		}
-		//log.Printf("junksize = %x  / len(junk) = %x", junksize, len(junk))
+
 		err = binary.Write(out, binary.BigEndian, junksize)
 		if err != nil {
 			panic(err)
@@ -306,20 +276,6 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 		if err != nil {
 			panic(err)
 		}
-
-		/*
-			var opos int64
-
-			switch o := out.(type) {
-			case io.WriteSeeker:
-				opos, _ = o.Seek(0, 1)
-			case *bytes.Buffer:
-				opos = int64(o.Len())
-			default:
-				log.Panicf("unknown type %q", o)
-			}
-			log.Printf(" -- Position : %x", opos)
-		*/
 	}
 
 	// Sentinel
@@ -353,29 +309,24 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 	*/
 
 	buf := &bytes.Buffer{}
-	n, err := io.Copy(buf, input)
-	log.Printf("Copying %d bytes (Err = %v)", n, err)
+	_, err := io.Copy(buf, input)
+	//log.Printf("Copying %d bytes (Err = %v)", n, err)
 	if err != nil {
 		panic(err)
 	}
 	input = buf
 
-	to_compress, compressed := java_deflater()
+	to_compress, compressed, cleanup := java_deflater()
 
 	defer func() {
-		log.Print("smudge completed..")
 		// Signal the deflater that we're done
 		to_compress <- []byte{}
+		cleanup()
 	}()
 
 	var datalen uint32
 	for {
-		//i, _ := input.(io.ReadSeeker)
-		//ipos, _ := i.Seek(0, 1)
-		//log.Printf(" -- input position: %x", ipos)
-
 		err := binary.Read(input, binary.BigEndian, &datalen)
-		//log.Printf("Reading %x bytes (buf = %d) %v", datalen, buf.Len(), err)
 
 		if err == io.EOF {
 			log.Print("Hit EOF")
@@ -441,7 +392,6 @@ func smudge(locations Locations, input io.Reader, out io.Writer) {
 			panic(err)
 		}
 	}
-	log.Printf("I am here...")
 }
 
 // Obtain a hash of buffer without modifying its contents
@@ -495,6 +445,7 @@ func process_stream(direction string, input io.Reader, out io.Writer) {
 		outbufs := io.MultiWriter(outbuf, tmpout)
 		clean(locations, inputbuf, outbufs)
 
+		// The following can be removed if this code is ever trusted
 		resmudgedbuf := &bytes.Buffer{}
 		smudge(locations, tmpout, resmudgedbuf)
 		h_after := GetHash(resmudgedbuf)
@@ -502,6 +453,7 @@ func process_stream(direction string, input io.Reader, out io.Writer) {
 			log.Printf("Smudged output doesn't equal input! %x != %x",
 				h_before, h_after)
 		}
+		_ = h_before
 
 		outbuf.WriteTo(out)
 
@@ -511,7 +463,7 @@ func process_stream(direction string, input io.Reader, out io.Writer) {
 }
 
 func main() {
-	log.Print("Begin")
+	//log.Print("Begin")
 	flag.Parse()
 
 	if flag.NArg() < 1 {
