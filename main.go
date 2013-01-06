@@ -155,6 +155,33 @@ func clean(locations Locations, input io.Reader, out io.Writer) {
 
 }
 
+func checked_bin_read(in io.Reader, data interface{}) {
+	err := binary.Read(in, binary.BigEndian, data)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func checked_bin_write(out io.Writer, data interface{}) {
+	err := binary.Write(out, binary.BigEndian, data)
+	if err != nil {
+		panic(err)
+	}
+}
+
+func checked_byteslice_read(in io.Reader, len uint64) []byte {
+	data := make([]byte, len)
+	n, err := io.ReadFull(in, data)
+	if uint64(n) != len {
+		log.Panicf("checked_byteslice_read failed expected %d got %d err = %v",
+			len, n, err)
+	}
+	if err != nil {
+		panic(err)
+	}
+	return data
+}
+
 func smudge(locations Locations, input io.Reader, out io.Writer) {
 	/*
 		defer func() {
