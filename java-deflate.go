@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"sync"
 
 	"github.com/cookieo9/resources-go/v2/resources"
 )
@@ -56,17 +57,27 @@ func run_jar() (io.Writer, io.Reader, func()) {
 
 func java_deflater() (chan []byte, chan []byte, func()) {
 
-	stdin, stdout, cleanup := run_jar()
-
 	in, out := make(chan []byte), make(chan []byte)
+
+	var stdin io.Writer = nil
+	var stdout io.Reader = nil
+	var cleanup func() = func() {}
+
+	var once sync.Once
 
 	go func() {
 		for {
 			input := <-in
 			if len(input) == 0 {
-				binary.Write(stdin, binary.BigEndian, int32(0))
+				if stdin != nil {
+					binary.Write(stdin, binary.BigEndian, int32(0))
+				}
 				break
 			}
+			once.Do(func() {
+				// Only initialize java if we actually need it
+				stdin, stdout, cleanup = run_jar()
+			})
 
 			go func() {
 				// Length
@@ -109,10 +120,10 @@ func java_deflater() (chan []byte, chan []byte, func()) {
 				log.Printf("!!! ERR = %v", err)
 				panic(err)
 			}
+
 			out <- output
 		}
 		//log.Print("Finishing compression..")
 	}()
-
 	return in, out, cleanup
 }
