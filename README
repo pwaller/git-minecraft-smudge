@@ -3,6 +3,10 @@ git-minecraft-smudge
 
 Abusing git's filter mechanism for fun and profit.
 
+note: This is a crazy thing to do and should be considered untested.
+
+You have been warned.
+
 Purpose
 -------
 
@@ -37,3 +41,24 @@ and in your `.gitattributes` in your world folder or higher:
 	*.mca minecraft-anvil
 
 note: this renders the repository unusable without `git-minecraft-smudge`.
+
+
+Implementation details
+---------------------
+
+Unfortunately java's zlib implementation does something different to go's,
+which I wasn't able to figure out. So instead I call upon java just to do the
+compression.
+
+I also wanted to just have one binary named `git-minecraft-smudge` that did
+everything, so the `Makefile` embeds the `.jar` into the binary which is
+unpacked at runtime.
+
+Notes
+-----
+
+This seriously slows down many git operations including `status` `add` and
+`commit`, since it must put all files with modified timestamps through the
+`clean` phase, which is time consuming since it always verifies that it can
+repack the file to exactly the same contents.
+
