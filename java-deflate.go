@@ -125,5 +125,7 @@ func java_deflater() (chan []byte, chan []byte, func()) {
 		}
 		//log.Print("Finishing compression..")
 	}()
-	return in, out, cleanup
+	return in, out, func() {
+	    cleanup()
+	}
 }
