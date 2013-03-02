@@ -1,3 +1,20 @@
+** THIS PROJECT IS DEFUNCT **
+
+It remains here as a reminder of what I did.
+
+It was a nice idea and it does achieve an awesome compression ratio, but it is
+very time consuming `bup` beats it for convenience. Unfortunately, git doesn't
+generate great packs, so frequent repacking is needed in order to achieve good
+delta compression. After a month of hourly backups, this takes hours.
+
+Keeping the world files in the same repository as the configuration also proved
+to be a mistake, as all git operations (status, add, etc) have to run the files
+through the smudge filter. This is painfully slow.
+
+If I was doing it again, I'd recommend trying out `bup` and maybe try using it
+as a backend for `git-annex`.
+
+
 git-minecraft-smudge
 --------------------
 
